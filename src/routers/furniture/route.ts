@@ -177,6 +177,7 @@ const joinFurniture = async (
     .doc(furnitureId);
 
   let result = true;
+  console.log("start");
   await db
     .runTransaction(async (transaction) => {
       transaction.update(furnitureRef, {
