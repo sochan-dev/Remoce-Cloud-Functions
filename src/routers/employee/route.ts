@@ -4,7 +4,8 @@ const express = Express;
 const router = express.Router();
 const endPoint = "/employee";
 
-type PostRequest = {
+type PutRequest = {
+  isExit: boolean;
   officeId: string;
   employeeId: string;
 };
@@ -25,9 +26,18 @@ type Employee_data = {
 };
 
 router.route(endPoint).put(async (req, res) => {
-  const body = JSON.parse(req.body.data) as PostRequest;
-  const { officeId, employeeId } = body;
-  res.set("Access-Control-Allow-Origin", "true");
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Credentials", "true");
+  res.header({ "Access-Control-Allow-Origin": "*" });
+  res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, access_token"
+  );
+  res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
+
+  const body = JSON.parse(req.body.data) as PutRequest;
+  const { officeId, employeeId, isExit } = body;
 
   const roomRef = db
     .collection("offices")
@@ -35,31 +45,51 @@ router.route(endPoint).put(async (req, res) => {
     .collection("room")
     .doc("room");
 
+  const furnitureCollectionRef = db
+    .collection("offices")
+    .doc(officeId)
+    .collection("furniture");
+
   await db
     .runTransaction(async (transaction) => {
+      const roomSnapshot = await transaction.get(roomRef);
+      const furnitureSnapshot = await transaction.get(furnitureCollectionRef);
+      furnitureSnapshot.forEach(async (snapshot) => {
+        const furnitureRef = db
+          .collection("offices")
+          .doc(officeId)
+          .collection("furniture")
+          .doc(snapshot.id);
+
+        transaction.update(furnitureRef, {
+          join_employees: fieldValue.arrayRemove(employeeId)
+        });
+      });
+
+      const rooms = roomSnapshot.data() as Room[];
       let newRooms: Room[];
-      await transaction.get(roomRef).then(async (snapshot) => {
-        const rooms = snapshot.data() as Room[];
-        if (rooms) {
-          if (rooms.length > 0) {
-            newRooms = rooms.map((room) => {
-              const newJoinEmployee = room.join_employees.filter((empId) => {
-                empId !== employeeId;
-              });
-              return {
-                ...room,
-                join_employees: newJoinEmployee
-              };
+      if (rooms) {
+        if (rooms.length > 0) {
+          newRooms = rooms.map((room) => {
+            const newJoinEmployee = room.join_employees.filter((empId) => {
+              empId !== employeeId;
             });
-            transaction.update(roomRef, {
-              rooms: newRooms
-            });
-          }
+            return {
+              ...room,
+              join_employees: newJoinEmployee
+            };
+          });
+          newRooms = newRooms.filter((room) => room.join_employees.length > 1);
+          transaction.update(roomRef, {
+            rooms: newRooms
+          });
         }
-      });
-      database.ref(`status/${officeId}/${employeeId}`).set({
-        status: false
-      });
+      }
+      if (isExit) {
+        database.ref(`status/${employeeId}`).update({
+          status: false
+        });
+      }
     })
     .then(() => res.json({ message: "success" }))
     .catch((e) => res.json({ message: "failed", e: e }));
@@ -102,6 +132,7 @@ router.route(endPoint).delete(async (req, res) => {
   await db
     .runTransaction(async (transaction) => {
       const employeeSnapshot = await transaction.get(employeeRef);
+      const roomSnapshot = await transaction.get(roomRef);
       const { uid } = employeeSnapshot.data() as Employee_data;
       await transaction.get(furnitureRef).then(async (snapshots) => {
         snapshots.forEach(async (snapshot) => {
@@ -120,6 +151,27 @@ router.route(endPoint).delete(async (req, res) => {
           });
         });
       });
+
+      const rooms = roomSnapshot.data() as Room[];
+      let newRooms: Room[];
+      if (rooms) {
+        if (rooms.length > 0) {
+          newRooms = rooms.map((room) => {
+            const newJoinEmployee = room.join_employees.filter((empId) => {
+              empId !== employeeId;
+            });
+            return {
+              ...room,
+              join_employees: newJoinEmployee
+            };
+          });
+          newRooms = newRooms.filter((room) => room.join_employees.length > 1);
+          transaction.update(roomRef, {
+            rooms: newRooms
+          });
+        }
+      }
+
       const userRef = db
         .collection("users")
         .doc(uid)
@@ -127,9 +179,6 @@ router.route(endPoint).delete(async (req, res) => {
         .doc(employeeId);
       transaction.delete(employeeRef);
       transaction.delete(userRef);
-      transaction.update(roomRef, {
-        join_employees: fieldValue.arrayRemove(employeeId)
-      });
     })
     .then(() => res.json({ message: "success" }))
     .catch((e) => res.json({ message: "failed", e: e }));
